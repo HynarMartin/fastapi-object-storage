@@ -22,6 +22,15 @@
         .image-box { flex: 1; text-align: center; background: #fdfdfd; padding: 10px; border-radius: 8px; border: 1px dashed #ccc; }
         .image-box img { max-width: 100%; max-height: 300px; border-radius: 4px; object-fit: contain; display: none; }
         .placeholder-text { color: #999; font-style: italic; margin-top: 50px; display: block; }
+        
+        /* Jednoduché styly pro Haystack panel (nahrazuje Bootstrap) */
+        .haystack-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .haystack-item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #eee; }
+        .badge { padding: 4px 8px; border-radius: 12px; color: white; font-weight: bold; font-size: 12px; }
+        .bg-success { background-color: #27ae60; }
+        .bg-danger { background-color: #e74c3c; }
+        .bg-warning { background-color: #f1c40f; color: #333; }
+        .vol-list { background: #f8f9fa; border: 1px solid #ddd; padding: 15px; border-radius: 5px; font-family: monospace; min-height: 100px; }
     </style>
 </head>
 <body>
@@ -56,6 +65,16 @@
                 <h3 style="margin-top: 0;">Původní obrázek</h3>
                 <span id="origPlaceholder" class="placeholder-text">Načítám...</span>
                 <img id="imgOriginal" src="" alt="Původní obrázek">
+                <div class="image-box">
+                <h3 style="margin-top: 0;">Původní obrázek</h3>
+                <!-- NOVÉ TLAČÍTKO ZDE: -->
+                <button id="deleteBtn" style="background-color: #e74c3c; padding: 5px 10px; font-size: 12px; margin-bottom: 10px; display: none;" onclick="deleteFile()">
+                    🗑️ Smazat obrázek
+                </button>
+                
+                <span id="origPlaceholder" class="placeholder-text">Načítám...</span>
+                <img id="imgOriginal" src="" alt="Původní obrázek">
+            </div>
             </div>
             <div class="image-box">
                 <h3 style="margin-top: 0;">Zpracovaný výsledek</h3>
@@ -90,6 +109,43 @@
         <pre id="billingResult">Zatím žádná data...</pre>
     </div>
 
+    <!-- KROK 5: Haystack Storage Status -->
+    <div class="card">
+        <h2>5. Sledování Haystack Svazků (Volume)</h2>
+        <p style="color: #7f8c8d; font-size: 14px;">Ukázka Facebook Haystack architektury. Data se ukládají metodou Append-only do jednoho souboru.</p>
+        
+        <button style="background-color: #f39c12; margin-bottom: 15px;" onclick="fetchHaystackStatus()">
+            🔄 Aktualizovat stav disků
+        </button>
+
+        <div class="haystack-grid">
+            <div>
+                <div class="haystack-item">
+                    <span>Živé fotky v databázi:</span>
+                    <span class="badge bg-success" id="hayActive">0</span>
+                </div>
+                <div class="haystack-item">
+                    <span>Smazané fotky (fragmentace):</span>
+                    <span class="badge bg-danger" id="hayDeleted">0</span>
+                </div>
+                <div class="haystack-item">
+                    <span>Promrhané místo (před defragmentací):</span>
+                    <span class="badge bg-warning" id="hayWasted">0 KB</span>
+                </div>
+            </div>
+            <div>
+                <h4 style="margin-top: 0;">Fyzické svazky na disku:</h4>
+                <div id="volumesList" class="vol-list">
+                    <!-- Zde se vykreslí seznam svazků -->
+                </div>
+                <div style="margin-top: 10px; text-align: right; font-weight: bold;">
+                    Celkem na disku: <span id="hayTotalSize" style="color: #2980b9;">0 KB</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- JAVASCRIPT ČÁST -->
     <script>
         const API_URL = "http://127.0.0.1:8000";
         let bucketId = null;
@@ -156,11 +212,27 @@
                     const imgOrig = document.getElementById('imgOriginal');
                     const origPlaceholder = document.getElementById('origPlaceholder');
                     
-                    imgOrig.src = `${API_URL}/files/${fileId}`;
+                    const loadOriginalImage = () => {
+                        imgOrig.src = `${API_URL}/files/${fileId}?t=${new Date().getTime()}`;
+                    };
+
                     imgOrig.onload = () => {
                         origPlaceholder.style.display = 'none';
                         imgOrig.style.display = 'inline-block';
+                        document.getElementById('deleteBtn').style.display = 'inline-block'; // TOTO PŘIDEJ
+                        imgOrig.onerror = null; 
+                        
+                        // Po úspěšném nahrání aktualizujeme stav Haystacku
+                        fetchHaystackStatus();
                     };
+
+                    // Retry logika pro Eventual Consistency
+                    imgOrig.onerror = () => {
+                        console.log("Obrázek ještě není ready (Eventual Consistency), zkouším to znovu...");
+                        setTimeout(loadOriginalImage, 500); 
+                    };
+
+                    loadOriginalImage(); 
 
                     // Reset náhledu upraveného obrázku
                     document.getElementById('imgProcessed').style.display = 'none';
@@ -181,8 +253,6 @@
         // 3. Spuštění procesu
         async function processImage() {
             const operation = document.getElementById('operationSelect').value;
-            
-            // Indikátor do náhledu
             document.getElementById('procPlaceholder').innerText = '⏳ Zpracovávám (Worker pracuje)...';
             
             try {
@@ -217,10 +287,37 @@
             }
         }
 
-        // WebSocket Připojení k Message Brokeru
+        // 5. Načtení Haystack Statusu
+        async function fetchHaystackStatus() {
+            try {
+                const response = await fetch(`${API_URL}/haystack/status`);
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    document.getElementById('hayActive').innerText = data.active_count;
+                    document.getElementById('hayDeleted').innerText = data.deleted_count;
+                    document.getElementById('hayWasted').innerText = data.wasted_kb + ' KB';
+                    document.getElementById('hayTotalSize').innerText = data.total_physical_kb + ' KB';
+                    
+                    const volList = document.getElementById('volumesList');
+                    volList.innerHTML = '';
+                    
+                    if (data.volumes.length === 0) {
+                        volList.innerHTML = '<span style="color: #999;">Zatím neexistují žádné svazky.</span>';
+                    } else {
+                        data.volumes.forEach(vol => {
+                            volList.innerHTML += `<div>💾 <b>${vol.name}</b> ..... ${vol.size_kb} KB</div>`;
+                        });
+                    }
+                }
+            } catch (error) {
+                console.error("Chyba při načítání Haystack statusu:", error);
+            }
+        }
+
+        // WebSocket Připojení
         function initWebSocket() {
             const logEl = document.getElementById('brokerLog');
-            // Zabraňuje vytvoření více spojení najednou
             if (ws !== null && ws.readyState !== WebSocket.CLOSED) return;
 
             ws = new WebSocket(`ws://127.0.0.1:8000/broker?format=json`);
@@ -240,27 +337,23 @@
                     
                     ws.send(JSON.stringify({ action: "ack", message_id: msg.message_id }));
                     
-// KOUZLO TADY: Pokud Worker hlásí úspěch, načteme a zobrazíme upravený obrázek
-                    // Přidána kontrola msg.payload pro jistotu, aby JS nespadl
                     if (msg.payload && msg.payload.status === "success" && fileId) {
                         const imgProc = document.getElementById('imgProcessed');
                         const procPlaceholder = document.getElementById('procPlaceholder');
                         
                         imgProc.src = `${API_URL}/buckets/${bucketId}/objects/${fileId}/processed?t=${new Date().getTime()}`;
                         
-                        // Co se stane, když se obrázek úspěšně načte
                         imgProc.onload = () => {
                             procPlaceholder.style.display = 'none';
                             imgProc.style.display = 'inline-block';
+                            fetchHaystackStatus(); // Znovu načíst status
                         };
 
-                        // NOVÉ: Co se stane, když server obrázek nenajde (např. chyba 404)
                         imgProc.onerror = () => {
                             procPlaceholder.innerHTML = "❌ <b>Chyba:</b> Worker úlohu dokončil, ale server obrázek na disku nenašel. Zkontroluj složku!";
                             procPlaceholder.style.color = "#c0392b";
                         };
                     }
-                    
                     getBilling();
                 }
             };
@@ -269,6 +362,51 @@
                 logEl.innerHTML += `\n🔴 Chyba WebSocketu: Zkontroluj, zda běží backend.\n`;
             };
         }
+
+        // Načtení statusu hned po otevření stránky
+        window.addEventListener('DOMContentLoaded', fetchHaystackStatus);
+
+        // 6. Smazání souboru (Soft Delete)
+        async function deleteFile() {
+            if (!fileId) return alert("Není vybrán žádný soubor.");
+            if (!confirm("Opravdu chcete tento obrázek smazat? Z disku se nesmaže, jen se označí jako smazaný (fragmentace).")) return;
+
+            try {
+                const res = await fetch(`${API_URL}/files/${fileId}`, {
+                    method: 'DELETE'
+                });
+
+                if (res.ok) {
+                    alert("Obrázek byl úspěšně přesunut do koše!");
+                    
+                    // Schováme obrázek a tlačítko v UI
+                    document.getElementById('imgOriginal').style.display = 'none';
+                    document.getElementById('deleteBtn').style.display = 'none';
+                    const placeholder = document.getElementById('origPlaceholder');
+                    placeholder.style.display = 'block';
+                    placeholder.innerHTML = "<b>Obrázek byl smazán.</b>";
+                    
+                    // Schováme i výsledek zpracování, pokud tam byl
+                    document.getElementById('imgProcessed').style.display = 'none';
+                    
+                    // Zablokujeme tlačítka pro další úpravy
+                    document.getElementById('operationSelect').disabled = true;
+                    document.getElementById('processBtn').disabled = true;
+                    
+                    fileId = null; // Vymažeme ID, abychom s ním už nemohli pracovat
+
+                    // 💥 TADY SE STANE TA MAGIE PRO OBHAJOBU:
+                    fetchHaystackStatus();
+                    getBilling();
+                } else {
+                    const data = await res.json();
+                    alert(`Chyba: ${JSON.stringify(data)}`);
+                }
+            } catch (e) {
+                alert(`Chyba sítě: ${e.message}`);
+            }
+        }
+
     </script>
 </body>
 </html>

@@ -32,6 +32,11 @@ class FileMetadataResponse(BaseModel):
     created_at: datetime
     is_deleted: bool
     
+    # NOVÉ POLOŽKY PRO HAYSTACK
+    status: str
+    volume_id: Optional[int] = None
+    offset: Optional[int] = None
+    
     model_config = ConfigDict(from_attributes=True)
 
 class BrokerMessage(BaseModel):

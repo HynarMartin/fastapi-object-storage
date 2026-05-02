@@ -26,7 +26,12 @@ class FileMetadata(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
     user_id: Mapped[str] = mapped_column(String, index=True)
     filename: Mapped[str] = mapped_column(String)
-    path: Mapped[str] = mapped_column(String)
+    
+    # NOVÉ SLOUPCE PRO HAYSTACK ARCHITEKTURU
+    volume_id: Mapped[int] = mapped_column(Integer, nullable=True)
+    offset: Mapped[int] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="uploading") # Stavy: uploading, ready, error
+    
     size: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -35,7 +40,7 @@ class FileMetadata(Base):
     bucket: Mapped["Bucket"] = relationship("Bucket", back_populates="files")
 
 class QueuedMessage(Base):
-    """Model pro garantované doručení zpráv (Úkol 5)."""
+    """Model pro garantované doručení zpráv (Message Broker)."""
     __tablename__ = "queued_messages"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

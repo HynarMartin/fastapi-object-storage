@@ -15,3 +15,5 @@ __pycache__/
 
 # Konfigurace prostředí (kdybys tam měl např. hesla)
 .env
+
+*.md
