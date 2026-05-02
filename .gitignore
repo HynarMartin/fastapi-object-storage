@@ -1,0 +1,17 @@
+# Virtuální prostředí
+venv/
+env/
+
+# Databáze
+*.db
+*.sqlite3
+
+# Nahrané a zpracované soubory
+storage/
+
+# Python cache (ty divné složky, co si Python tvoří sám)
+__pycache__/
+*.pyc
+
+# Konfigurace prostředí (kdybys tam měl např. hesla)
+.env

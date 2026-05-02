@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Storage & Broker UI</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f5f7fa; color: #333; }
+        h1, h2 { color: #2c3e50; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .step { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; }
+        input, select, button { padding: 10px; border-radius: 5px; border: 1px solid #ccc; font-size: 14px; }
+        button { background-color: #3498db; color: white; border: none; cursor: pointer; transition: background 0.3s; font-weight: bold; }
+        button:hover { background-color: #2980b9; }
+        button:disabled { background-color: #95a5a6; cursor: not-allowed; }
+        pre { background: #2c3e50; color: #ecf0f1; padding: 15px; border-radius: 5px; overflow-x: auto; font-size: 13px; max-height: 200px; overflow-y: auto; }
+        .success { color: #27ae60; font-weight: bold; }
+        .error { color: #c0392b; font-weight: bold; }
+        
+        /* Styly pro vizualizaci obrázků */
+        .image-preview { display: flex; gap: 20px; margin-top: 15px; }
+        .image-box { flex: 1; text-align: center; background: #fdfdfd; padding: 10px; border-radius: 8px; border: 1px dashed #ccc; }
+        .image-box img { max-width: 100%; max-height: 300px; border-radius: 4px; object-fit: contain; display: none; }
+        .placeholder-text { color: #999; font-style: italic; margin-top: 50px; display: block; }
+    </style>
+</head>
+<body>
+
+    <h1>🚀 Storage & Zpracování Obrazu</h1>
+
+    <!-- KROK 1: Vytvoření Bucketu -->
+    <div class="card">
+        <h2>1. Vytvoření Bucketu</h2>
+        <div class="step">
+            <input type="text" id="bucketName" placeholder="Název bucketu (např. test-bucket)">
+            <button onclick="createBucket()">Vytvořit</button>
+        </div>
+        <div id="bucketStatus"></div>
+    </div>
+
+    <!-- KROK 2: Upload Obrázku -->
+    <div class="card">
+        <h2>2. Nahrání Obrázku</h2>
+        <div class="step">
+            <input type="file" id="fileInput" accept="image/*" disabled>
+            <button id="uploadBtn" onclick="uploadFile()" disabled>Nahrát do Bucketu</button>
+        </div>
+        <div id="uploadStatus"></div>
+    </div>
+
+    <!-- NÁHLED OBRÁZKŮ (Zobrazí se až po uploadu) -->
+    <div class="card" id="previewCard" style="display: none;">
+        <h2>Náhled Obrázků</h2>
+        <div class="image-preview">
+            <div class="image-box">
+                <h3 style="margin-top: 0;">Původní obrázek</h3>
+                <span id="origPlaceholder" class="placeholder-text">Načítám...</span>
+                <img id="imgOriginal" src="" alt="Původní obrázek">
+            </div>
+            <div class="image-box">
+                <h3 style="margin-top: 0;">Zpracovaný výsledek</h3>
+                <span id="procPlaceholder" class="placeholder-text">Čekám na zpracování z Message Brokera...</span>
+                <img id="imgProcessed" src="" alt="Zpracovaný obrázek">
+            </div>
+        </div>
+    </div>
+
+    <!-- KROK 3: Zpracování a Broker -->
+    <div class="card">
+        <h2>3. Zpracování Obrázku (Message Broker)</h2>
+        <div class="step">
+            <select id="operationSelect" disabled>
+                <option value="grayscale">Grayscale (Černobíle)</option>
+                <option value="invert">Invert (Inverze barev)</option>
+                <option value="flip">Flip (Překlopení)</option>
+                <option value="brightness">Brightness (Zvýšení jasu)</option>
+            </select>
+            <button id="processBtn" onclick="processImage()" disabled>Odeslat ke zpracování</button>
+        </div>
+        <div id="processStatus"></div>
+        
+        <h3>Log z Message Brokera:</h3>
+        <pre id="brokerLog">Čekám na připojení...</pre>
+    </div>
+
+    <!-- KROK 4: Účtování -->
+    <div class="card">
+        <h2>4. Přehled účtování (Billing)</h2>
+        <button id="billingBtn" onclick="getBilling()" disabled>Aktualizovat Billing</button>
+        <pre id="billingResult">Zatím žádná data...</pre>
+    </div>
+
+    <script>
+        const API_URL = "http://127.0.0.1:8000";
+        let bucketId = null;
+        let fileId = null;
+        let ws = null;
+
+        function logMessage(elementId, msg, isError = false) {
+            const el = document.getElementById(elementId);
+            el.innerHTML = msg;
+            el.className = isError ? "error" : "success";
+        }
+
+        // 1. Vytvoření bucketu
+        async function createBucket() {
+            const name = document.getElementById('bucketName').value;
+            if (!name) return alert("Zadej název bucketu!");
+
+            try {
+                const res = await fetch(`${API_URL}/buckets/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name })
+                });
+                const data = await res.json();
+                
+                if (res.ok) {
+                    bucketId = data.id;
+                    logMessage('bucketStatus', `✅ Bucket vytvořen! ID: ${bucketId}`);
+                    
+                    document.getElementById('fileInput').disabled = false;
+                    document.getElementById('uploadBtn').disabled = false;
+                    document.getElementById('billingBtn').disabled = false;
+                    
+                    initWebSocket();
+                } else {
+                    logMessage('bucketStatus', `❌ Chyba: ${JSON.stringify(data)}`, true);
+                }
+            } catch (e) {
+                logMessage('bucketStatus', `❌ Chyba sítě: ${e.message}`, true);
+            }
+        }
+
+        // 2. Upload souboru
+        async function uploadFile() {
+            const fileInput = document.getElementById('fileInput');
+            if (!fileInput.files.length) return alert("Vyber obrázek!");
+
+            const formData = new FormData();
+            formData.append("file", fileInput.files[0]);
+
+            try {
+                const res = await fetch(`${API_URL}/buckets/${bucketId}/upload?user_id=user-123`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    fileId = data.id;
+                    logMessage('uploadStatus', `✅ Obrázek nahrán! File ID: ${fileId}`);
+                    
+                    // Zobrazení náhledu původního obrázku
+                    document.getElementById('previewCard').style.display = 'block';
+                    const imgOrig = document.getElementById('imgOriginal');
+                    const origPlaceholder = document.getElementById('origPlaceholder');
+                    
+                    imgOrig.src = `${API_URL}/files/${fileId}`;
+                    imgOrig.onload = () => {
+                        origPlaceholder.style.display = 'none';
+                        imgOrig.style.display = 'inline-block';
+                    };
+
+                    // Reset náhledu upraveného obrázku
+                    document.getElementById('imgProcessed').style.display = 'none';
+                    document.getElementById('procPlaceholder').style.display = 'block';
+                    document.getElementById('procPlaceholder').innerText = 'Čekám na zpracování...';
+                    
+                    document.getElementById('operationSelect').disabled = false;
+                    document.getElementById('processBtn').disabled = false;
+                    getBilling();
+                } else {
+                    logMessage('uploadStatus', `❌ Chyba: ${JSON.stringify(data)}`, true);
+                }
+            } catch (e) {
+                logMessage('uploadStatus', `❌ Chyba sítě: ${e.message}`, true);
+            }
+        }
+
+        // 3. Spuštění procesu
+        async function processImage() {
+            const operation = document.getElementById('operationSelect').value;
+            
+            // Indikátor do náhledu
+            document.getElementById('procPlaceholder').innerText = '⏳ Zpracovávám (Worker pracuje)...';
+            
+            try {
+                const res = await fetch(`${API_URL}/buckets/${bucketId}/objects/${fileId}/process`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ operation: operation, params: { offset: 50 } })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    logMessage('processStatus', `✅ Požadavek odeslán. Job ID: ${data.job_id}`);
+                } else {
+                    logMessage('processStatus', `❌ Chyba: ${JSON.stringify(data)}`, true);
+                }
+            } catch (e) {
+                logMessage('processStatus', `❌ Chyba sítě: ${e.message}`, true);
+            }
+        }
+
+        // 4. Billing
+        async function getBilling() {
+            if (!bucketId) return;
+            try {
+                const res = await fetch(`${API_URL}/buckets/${bucketId}/billing/`);
+                const data = await res.json();
+                if (res.ok) {
+                    document.getElementById('billingResult').textContent = JSON.stringify(data, null, 2);
+                }
+            } catch (e) {
+                console.error("Chyba při načítání billingu:", e);
+            }
+        }
+
+        // WebSocket Připojení k Message Brokeru
+        function initWebSocket() {
+            const logEl = document.getElementById('brokerLog');
+            // Zabraňuje vytvoření více spojení najednou
+            if (ws !== null && ws.readyState !== WebSocket.CLOSED) return;
+
+            ws = new WebSocket(`ws://127.0.0.1:8000/broker?format=json`);
+
+            ws.onopen = () => {
+                logEl.innerHTML = "🟢 Připojeno k brokeru.\n";
+                ws.send(JSON.stringify({ action: "subscribe", topic: "image.done" }));
+                logEl.innerHTML += "Odebírám téma: 'image.done'...\n";
+            };
+
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                if (msg.action === "deliver") {
+                    const time = new Date().toLocaleTimeString();
+                    logEl.innerHTML += `\n[${time}] Zpráva přijata:\n`;
+                    logEl.innerHTML += JSON.stringify(msg.payload, null, 2) + "\n";
+                    
+                    ws.send(JSON.stringify({ action: "ack", message_id: msg.message_id }));
+                    
+// KOUZLO TADY: Pokud Worker hlásí úspěch, načteme a zobrazíme upravený obrázek
+                    // Přidána kontrola msg.payload pro jistotu, aby JS nespadl
+                    if (msg.payload && msg.payload.status === "success" && fileId) {
+                        const imgProc = document.getElementById('imgProcessed');
+                        const procPlaceholder = document.getElementById('procPlaceholder');
+                        
+                        imgProc.src = `${API_URL}/buckets/${bucketId}/objects/${fileId}/processed?t=${new Date().getTime()}`;
+                        
+                        // Co se stane, když se obrázek úspěšně načte
+                        imgProc.onload = () => {
+                            procPlaceholder.style.display = 'none';
+                            imgProc.style.display = 'inline-block';
+                        };
+
+                        // NOVÉ: Co se stane, když server obrázek nenajde (např. chyba 404)
+                        imgProc.onerror = () => {
+                            procPlaceholder.innerHTML = "❌ <b>Chyba:</b> Worker úlohu dokončil, ale server obrázek na disku nenašel. Zkontroluj složku!";
+                            procPlaceholder.style.color = "#c0392b";
+                        };
+                    }
+                    
+                    getBilling();
+                }
+            };
+
+            ws.onerror = (error) => {
+                logEl.innerHTML += `\n🔴 Chyba WebSocketu: Zkontroluj, zda běží backend.\n`;
+            };
+        }
+    </script>
+</body>
+</html>
