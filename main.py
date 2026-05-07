@@ -322,9 +322,69 @@ async def delete_file(file_id: str, db: AsyncSession = Depends(get_db)):
     return {"message": f"Soubor {db_file.filename} byl úspěšně přesunut do koše (soft-delete)."}
 
 
-# Dočasně zakomentováno - Image Worker na tuto novou architekturu zatím není připravený
-# @app.post("/buckets/{bucket_id}/objects/{file_id}/process", status_code=status.HTTP_202_ACCEPTED)
-# async def process_image_endpoint(...)
+# 1. Endpoint, který přijme požadavek z Front-endu a pošle job do Brokera
+@app.post("/buckets/{bucket_id}/objects/{file_id}/process", status_code=status.HTTP_202_ACCEPTED, tags=["files"])
+async def process_image_endpoint(
+    bucket_id: str, 
+    file_id: str, 
+    request: schemas.ImageProcessRequest, 
+    db: AsyncSession = Depends(get_db)
+):
+    # Ověření, že soubor existuje a je připraven
+    result = await db.execute(
+        select(models.FileMetadata).filter(
+            models.FileMetadata.id == file_id,
+            models.FileMetadata.bucket_id == bucket_id,
+            models.FileMetadata.is_deleted == False
+        )
+    )
+    db_file = result.scalar_one_or_none()
+    
+    if not db_file or db_file.status != "ready":
+        raise HTTPException(status_code=400, detail="Soubor neexistuje nebo se stále nahrává.")
+
+    job_id = str(uuid.uuid4())
+    payload = {
+        "job_id": job_id,
+        "file_id": file_id,
+        "bucket_id": bucket_id,
+        "operation": request.operation,
+        "params": request.params
+    }
+    
+    # Odeslání do fronty
+    await manager.broadcast("image.jobs", payload, db, source_is_binary=False)
+    
+    return {"job_id": job_id, "status": "processing"}
+
+
+# 2. Endpoint, ze kterého si Frontend stáhne upravený obrázek (volá ho index.html)
+@app.get("/buckets/{bucket_id}/objects/{file_id}/processed", tags=["files"])
+async def get_processed_image(bucket_id: str, file_id: str, db: AsyncSession = Depends(get_db)):
+    # Najdeme soubor, který Worker nahrál s prefixem "processed_"
+    result = await db.execute(
+        select(models.FileMetadata).filter(
+            models.FileMetadata.filename == f"processed_{file_id}.jpg",
+            models.FileMetadata.bucket_id == bucket_id,
+            models.FileMetadata.is_deleted == False
+        ).order_by(models.FileMetadata.created_at.desc())
+    )
+    db_file = result.scalars().first()
+    
+    if not db_file or db_file.status != "ready":
+        raise HTTPException(status_code=404, detail="Zpracovaný obrázek zatím není k dispozici")
+
+    # Přeposlání dat z Haystack Node (stejná logika jako u běžného downloadu)
+    haystack_url = f"http://127.0.0.1:8001/volume/{db_file.volume_id}/{db_file.offset}/{db_file.size}"
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(haystack_url)
+            resp.raise_for_status()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Chyba při čtení z Haystack Node: {e}")
+
+    return Response(content=resp.content, media_type="image/jpeg")
+
 
 @app.get("/haystack/status", tags=["haystack"])
 async def get_haystack_status(db: AsyncSession = Depends(get_db)):

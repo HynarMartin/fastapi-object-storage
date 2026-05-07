@@ -4,6 +4,8 @@ import websockets
 import numpy as np
 from PIL import Image
 import traceback
+import httpx
+import io
 
 def process_image(img_array: np.ndarray, operation: str, params: dict) -> np.ndarray:
     """Provede transformaci obrázku čistě pomocí NumPy matic."""
@@ -48,17 +50,16 @@ def process_image(img_array: np.ndarray, operation: str, params: dict) -> np.nda
     else:
         raise ValueError(f"Neznámá nebo nepodporovaná operace: {operation}")
 
+
 async def image_worker():
     uri = "ws://localhost:8000/broker?format=json"
     
     while True:
         try:
             async with websockets.connect(uri) as ws:
-                print("Worker připojen k brokeru. Čekám na úlohy...")
+                print("🟢 Worker připojen k brokeru. Čekám na úlohy...")
                 
-                # Přihlášení k odběru úloh
-                sub_msg = {"action": "subscribe", "topic": "image.jobs"}
-                await ws.send(json.dumps(sub_msg))
+                await ws.send(json.dumps({"action": "subscribe", "topic": "image.jobs"}))
                 
                 while True:
                     raw = await ws.recv()
@@ -70,55 +71,69 @@ async def image_worker():
                         job_id = payload.get("job_id", "unknown")
                         
                         try:
-                            # Zde by proběhlo stažení z S3 Gateway
-                            # Pro testovací účely generujeme testovací matici, pokud je to test
                             if payload.get("is_test"):
                                 img_array = np.random.randint(0, 256, (200, 200, 3), dtype=np.uint8)
                             else:
-                                img = Image.open(payload["input_path"])
-                                img_array = np.array(img)
+                                # 1. STAŽENÍ OBRÁZKU Z S3 GATEWAY DO PAMĚTI
+                                file_id = payload["file_id"]
+                                bucket_id = payload["bucket_id"]
+                                async with httpx.AsyncClient() as client:
+                                    resp = await client.get(f"http://127.0.0.1:8000/files/{file_id}")
+                                    resp.raise_for_status()
+                                    img = Image.open(io.BytesIO(resp.content))
+                                    img_array = np.array(img)
                             
-                            # Zpracování přes NumPy
+                            # 2. ZPRACOVÁNÍ PŘES NUMPY
                             result_array = process_image(
                                 img_array, 
                                 payload.get("operation"), 
                                 payload.get("params", {})
                             )
                             
-                            # Zde by proběhlo nahrání do S3 Gateway
                             if not payload.get("is_test"):
+                                # 3. NAHRÁNÍ VÝSLEDKU ZPĚT DO S3 GATEWAY
                                 result_img = Image.fromarray(result_array)
-                                result_img.save(payload["output_path"], format="JPEG")
+                                buf = io.BytesIO()
+                                result_img.save(buf, format="JPEG")
+                                buf.seek(0)
                                 
+                                # Simulujeme odeslání z formuláře, nastavíme název začínající na "processed_"
+                                files = {'file': (f"processed_{file_id}.jpg", buf, "image/jpeg")}
+                                async with httpx.AsyncClient() as client:
+                                    upload_resp = await client.post(
+                                        f"http://127.0.0.1:8000/buckets/{bucket_id}/upload?user_id=worker",
+                                        files=files,
+                                        headers={"X-Internal-Source": "true"},
+                                        timeout=20.0  # Zvýšený timeout pro větší obrázky
+                                    )
+                                    upload_resp.raise_for_status()
+
                             response_payload = {
                                 "status": "success",
                                 "job_id": job_id,
                                 "operation": payload.get("operation")
                             }
-                            print(f"Úloha {job_id} dokončena.")
+                            print(f"✅ Úloha {job_id} úspěšně dokončena.")
                             
                         except Exception as e:
-                            print(f"Chyba u úlohy {job_id}: {e}")
+                            print(f"❌ Chyba u úlohy {job_id}: {e}")
+                            traceback.print_exc()
                             response_payload = {
                                 "status": "error",
                                 "job_id": job_id,
                                 "message": str(e)
                             }
                             
-                        # Odeslání zprávy o výsledku
-                        done_msg = {
+                        # 4. ODESLÁNÍ VÝSLEDKU A POTVRZENÍ
+                        await ws.send(json.dumps({
                             "action": "publish",
                             "topic": "image.done",
                             "payload": response_payload
-                        }
-                        await ws.send(json.dumps(done_msg))
-                        
-                        # Potvrzení zpracování původní zprávy (ACK)
-                        ack_msg = {"action": "ack", "message_id": msg_id}
-                        await ws.send(json.dumps(ack_msg))
+                        }))
+                        await ws.send(json.dumps({"action": "ack", "message_id": msg_id}))
                         
         except websockets.exceptions.ConnectionClosed:
-            print("Spojení s brokerem ztraceno. Obnovuji za 5 sekund...")
+            print("🔴 Spojení s brokerem ztraceno. Obnovuji za 5 sekund...")
             await asyncio.sleep(5)
         except Exception as e:
             traceback.print_exc()
