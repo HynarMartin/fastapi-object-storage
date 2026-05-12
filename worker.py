@@ -56,7 +56,7 @@ async def image_worker():
     
     while True:
         try:
-            async with websockets.connect(uri) as ws:
+            async with websockets.connect(uri, max_size=None) as ws:
                 print("🟢 Worker připojen k brokeru. Čekám na úlohy...")
                 
                 await ws.send(json.dumps({"action": "subscribe", "topic": "image.jobs"}))

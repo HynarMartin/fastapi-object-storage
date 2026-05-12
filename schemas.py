@@ -20,7 +20,13 @@ class BillingResponse(BaseModel):
     egress_bytes: int
     internal_transfer_bytes: int
     total_api_calls: int
-    
+    model_config = ConfigDict(from_attributes=True)
+
+class FileSegmentResponse(BaseModel):
+    segment_index: int
+    volume_id: int
+    offset: int
+    size: int
     model_config = ConfigDict(from_attributes=True)
 
 class FileMetadataResponse(BaseModel):
@@ -31,12 +37,8 @@ class FileMetadataResponse(BaseModel):
     bucket_id: str
     created_at: datetime
     is_deleted: bool
-    
-    # NOVÉ POLOŽKY PRO HAYSTACK
     status: str
-    volume_id: Optional[int] = None
-    offset: Optional[int] = None
-    
+    segments: list[FileSegmentResponse] = []
     model_config = ConfigDict(from_attributes=True)
 
 class BrokerMessage(BaseModel):
