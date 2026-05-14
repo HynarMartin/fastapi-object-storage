@@ -275,6 +275,29 @@ async def get_haystack_status(db: AsyncSession = Depends(get_db)):
     volumes_info.sort(key=lambda x: x["name"])
     return {"active_count": len(active_files), "deleted_count": len(deleted_files), "wasted_kb": round(sum(f.size for f in deleted_files) / 1024, 2), "total_physical_kb": round(total_physical_size / 1024, 2), "volumes": volumes_info}
 
+@app.get("/haystack/volumes/{volume_id}", tags=["haystack"])
+async def get_volume_details(volume_id: int, db: AsyncSession = Depends(get_db)):
+    """Vrátí detailní rozpis všech segmentů a souborů uvnitř konkrétního svazku."""
+    result = await db.execute(
+        select(models.FileSegment)
+        .options(selectinload(models.FileSegment.file))
+        .filter(models.FileSegment.volume_id == volume_id)
+        .order_by(models.FileSegment.offset)
+    )
+    segments = result.scalars().all()
+
+    details = []
+    for seg in segments:
+        details.append({
+            "file_id": seg.file_id,
+            "filename": seg.file.filename if seg.file else "Neznámý",
+            "is_deleted": seg.file.is_deleted if seg.file else True,
+            "offset": seg.offset,
+            "size": seg.size,
+            "segment_index": seg.segment_index
+        })
+    return details
+
 # main.py (úplně na konci souboru)
 if __name__ == "__main__":
     import uvicorn
