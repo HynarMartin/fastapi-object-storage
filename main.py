@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 
 import models, schemas
-from database import AsyncSessionLocal, get_db
+from database import AsyncSessionLocal, get_db, engine
 from pathlib import Path
 
 BENCHMARK_MODE = False
@@ -57,6 +57,13 @@ async def s3_ack_listener():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # --- AUTO-HEAL DATABÁZE ---
+    # Při každém startu si S3 Gateway zkontroluje DB a vytvoří chybějící tabulky
+    async with engine.begin() as conn:
+        await conn.run_sync(models.Base.metadata.create_all)
+    print("✅ Databáze zkontrolována a tabulky jsou připraveny.")
+    
+    # Spuštění naslouchání
     task = asyncio.create_task(s3_ack_listener())
     yield
     task.cancel()
@@ -124,19 +131,25 @@ async def websocket_endpoint(websocket: WebSocket, format: str = Query("json")):
             try:
                 msg_dict = msgpack.unpackb(raw_data) if is_binary else json.loads(raw_data)
                 msg = schemas.BrokerMessage(**msg_dict)
-            except Exception: continue
+            except Exception:
+                continue
 
             if msg.action == "subscribe":
                 current_topic = msg.topic
-                async with AsyncSessionLocal() as db: await manager.connect(websocket, current_topic, db, is_binary)
+                async with AsyncSessionLocal() as db:
+                    await manager.connect(websocket, current_topic, db, is_binary)
             elif msg.action == "publish":
-                async with AsyncSessionLocal() as db: await manager.broadcast(msg.topic, msg.payload, db, is_binary)
+                async with AsyncSessionLocal() as db:
+                    await manager.broadcast(msg.topic, msg.payload, db, is_binary)
             elif msg.action == "ack":
                 async with AsyncSessionLocal() as db:
                     await db.execute(update(models.QueuedMessage).where(models.QueuedMessage.id == msg.message_id).values(is_delivered=True))
                     await db.commit()
-    except Exception:
-        if current_topic: manager.disconnect(websocket, current_topic)
+    except Exception as e:
+        print(f"❌ CHYBA VE WEBSOCKETU: {e}")
+        traceback.print_exc()
+        if current_topic:
+            manager.disconnect(websocket, current_topic)
 
 @app.post("/buckets/", response_model=schemas.BucketResponse, tags=["buckets"])
 async def create_bucket(bucket: schemas.BucketCreate, db: AsyncSession = Depends(get_db)):
